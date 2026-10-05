@@ -2,24 +2,27 @@ import QtQuick 2.15
 import QtQuick.Window 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+
 Window {
     id: mainWindow
     width: 1024
     height: 600
     visible: true
-    title: "Hệ thống điểm danh bằng khuôn mặt"
-    color: "#1e1e2e" // Màu nền Dark theme
+    title: "Face Attendance System"
+    color: "#1e1e2e" // Dark theme background color
 
-    // Dữ liệu giả lập từ Backend C++ trả về khi quét thành công
+    // Simulated data returned from the C++ backend after a successful scan
     property bool isRecognized: false
     property string studentName: "Nguyễn Văn A"
     property string studentId: "SV2026001"
     property string studentClass: "CNTT K18"
     property string timeStamp: ""
-    property string avatarSource: "image://camera/stream" // Đường dẫn ImageProvider từ C++
+
+    // Default empty image path
+    property string avatarSource: ""
     property int frameCounter: 0
 
-        // Khi C++ phát signal frameUpdated -> Cập nhật lại Image Source để đổi Frame mới
+    // When C++ emits the frameUpdated signal, refresh the Image source to show the new frame
     Connections {
         target: cameraController
         function onFrameUpdated() {
@@ -29,7 +32,7 @@ Window {
     }
 
     Component.onCompleted: {
-        console.log("da calll ")
+        cameraController.loadDummyData("E:/hoaibao.jpg"); // Recommended to use forward slashes / instead of \
         cameraController.openDroidCamUrl("");
     }
 
@@ -39,7 +42,7 @@ Window {
         spacing: 20
 
         // ==========================================
-        // KHU VỰC 1: HIỂN THỊ CAMERA QUÉT KHUÔN MẶT
+        // AREA 1: CAMERA DISPLAY FOR FACE SCANNING
         // ==========================================
         Rectangle {
             Layout.fillWidth: true
@@ -49,24 +52,22 @@ Window {
             border.color: "#313244"
             border.width: 2
 
-            // Image provider nhận frame ảnh từ OpenCV truyền qua C++
             Image {
                 id: cameraView
                 anchors.fill: parent
                 anchors.margins: 5
                 fillMode: Image.PreserveAspectFit
-                cache: false;
-                // Bạn có thể liên kết nguồn ảnh thực tế từ C++ ImageProvider tại đây
+                cache: false
                 source: "image://camera/frame_0"
             }
 
-            // Khung quét nhấp nháy tạo hiệu ứng Scanning
+            // Scanning frame with a blinking effect
             Rectangle {
                 width: parent.width * 0.5
                 height: parent.width * 0.5
                 anchors.centerIn: parent
                 color: "transparent"
-                border.color: isRecognized ? "#a6e3a1" : "#89b4fa" // Xanh lá khi nhận diện được, Xanh dương khi đang chờ
+                border.color: isRecognized ? "#a6e3a1" : (infoPanel.isMismatch ? "#f38ba8" : "#89b4fa") // Updated frame color when an error occurs
                 border.width: 3
                 radius: 10
 
@@ -82,16 +83,17 @@ Window {
                 anchors.bottom: parent.bottom
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottomMargin: 15
-                text: "Đang quét khuôn mặt..."
+                text: isRecognized ? "Attendance recorded" : "Scanning face..."
                 color: "#cdd6f4"
                 font.pixelSize: 14
             }
         }
 
         // ==========================================
-        // KHU VỰC 2: BẢNG THÔNG TIN HỌC SINH
+        // AREA 2: STUDENT INFORMATION PANEL
         // ==========================================
         Rectangle {
+            id: infoPanel
             Layout.preferredWidth: 360
             Layout.fillHeight: true
             color: "#181825"
@@ -99,13 +101,42 @@ Window {
             border.color: "#313244"
             border.width: 1
 
+            property bool isMismatch: false
+
+            // Connect and listen to signals from the C++ class (CameraController)
+            Connections {
+                target: cameraController
+
+                // Handler when C++ recognizes the correct face
+                function onStudentRecognized(name, className, timeStr, avatar) {
+                    studentName = name;
+                    studentClass = className;
+                    timeStamp = timeStr;
+                    avatarSource = avatar;
+
+                    infoPanel.isMismatch = false; // Clear the error state
+                    isRecognized = true;         // Enable success state
+
+                    resetTimer.restart(); // Automatically reset the UI after 4 seconds
+                }
+
+                // Handler when C++ scans the wrong face or cannot find a face
+                function onFaceMismatch() {
+                    // Report mismatch only if attendance has not succeeded yet
+                    if (!isRecognized) {
+                        infoPanel.isMismatch = true;
+                        resetTimer.restart();
+                    }
+                }
+            }
+
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 20
                 spacing: 15
 
                 Text {
-                    text: "THÔNG TIN ĐIỂM DANH"
+                    text: "ATTENDANCE INFORMATION"
                     color: "#cdd6f4"
                     font.pixelSize: 18
                     font.bold: true
@@ -118,7 +149,7 @@ Window {
                     color: "#313244"
                 }
 
-                // Avatar / Ảnh quét
+                // Avatar / scanned image
                 Rectangle {
                     Layout.preferredWidth: 120
                     Layout.preferredHeight: 120
@@ -129,83 +160,78 @@ Window {
 
                     Text {
                         anchors.centerIn: parent
-                        text: isRecognized ? "" : "No Image"
+                        text: isRecognized ? "" : (infoPanel.isMismatch ? "Mismatch" : "No Image")
                         color: "#a6adc8"
                     }
 
                     Image {
                         anchors.fill: parent
                         visible: isRecognized
-                        source: "https://via.placeholder.com/120" // URL ảnh đại diện sinh viên
+                        // Use the avatarSource variable from C++ instead of a hardcoded URL
+                        source: avatarSource !== "" ? avatarSource : "https://via.placeholder.com/120"
+                        fillMode: Image.PreserveAspectCrop
                     }
                 }
 
-                // Chi tiết thông tin
+                // Student details
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 10
-                    visible: isRecognized
+                    visible: isRecognized || infoPanel.isMismatch
 
+                    // Status label frame (Success / Mismatch)
                     Rectangle {
                         Layout.fillWidth: true
                         height: 35
-                        color: "#27a060"
+                        // Adjust background color dynamically: green for success, red for mismatch
+                        color: infoPanel.isMismatch ? "#f38ba8" : "#27a060"
                         radius: 6
+
                         Text {
                             anchors.centerIn: parent
-                            text: "✓ THÀNH CÔNG"
-                            color: "white"
+                            text: infoPanel.isMismatch ? "✕ MISMATCH" : "✓ SUCCESS"
+                            color: infoPanel.isMismatch ? "#11111b" : "white"
                             font.bold: true
                         }
                     }
 
-                    Text { text: "Họ và tên: " + studentName; color: "#cdd6f4"; font.pixelSize: 15; font.bold: true }
-                    Text { text: "Mã sinh viên: " + studentId; color: "#a6adc8"; font.pixelSize: 14 }
-                    Text { text: "Lớp: " + studentClass; color: "#a6adc8"; font.pixelSize: 14 }
-                    Text { text: "Thời gian: " + timeStamp; color: "#a6adc8"; font.pixelSize: 14 }
+                    // Detailed student information when recognition is successful
+                    Text { visible: isRecognized; text: "Full name: " + studentName; color: "#cdd6f4"; font.pixelSize: 15; font.bold: true }
+                    Text { visible: isRecognized; text: "Student ID: " + studentId; color: "#a6adc8"; font.pixelSize: 14 }
+                    Text { visible: isRecognized; text: "Class: " + studentClass; color: "#a6adc8"; font.pixelSize: 14 }
+                    Text { visible: isRecognized; text: "Time: " + timeStamp; color: "#a6adc8"; font.pixelSize: 14 }
+
+                    // Warning message when mismatch occurs
+                    Text {
+                        visible: infoPanel.isMismatch && !isRecognized
+                        text: "Face not found in the system!"
+                        color: "#f38ba8"
+                        font.pixelSize: 14
+                        Layout.alignment: Qt.AlignHCenter
+                    }
                 }
 
                 Text {
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignHCenter
-                    text: "Vui lòng nhìn vào camera..."
+                    text: "Please look at the camera..."
                     color: "#a6adc8"
                     font.pixelSize: 14
                     horizontalAlignment: Text.AlignHCenter
-                    visible: !isRecognized
-                }
-
-                //Spacer {} // Đẩy nút bấm xuống dưới
-
-                // Nút bấm giả lập quét thành công (Dùng để Test UI)
-                Button {
-                    Layout.fillWidth: true
-                    text: isRecognized ? "Reset / Quét người tiếp theo" : "Test Quét Thành Công"
-                    onClicked: {
-                        if (isRecognized) {
-                            isRecognized = false;
-                        } else {
-                            // Giả lập nhận signal từ C++ trả dữ liệu về
-                            isRecognized = true;
-                            studentName = "Nguyễn Văn A";
-                            studentId = "SV2026001";
-                            studentClass = "CNTT K18";
-                            timeStamp = Qt.formatDateTime(new Date(), "hh:mm:ss - dd/MM/yyyy");
-                            resetTimer.restart(); // Tự động ẩn thông tin sau 4 giây
-                        }
-                    }
+                    visible: !isRecognized && !infoPanel.isMismatch
                 }
             }
         }
     }
 
-    // Timer tự động xóa thông tin sau khi nhận diện thành công 4 giây
+    // Timer that clears the information and returns the UI to the initial scanning state
     Timer {
         id: resetTimer
         interval: 4000
         repeat: false
         onTriggered: {
             isRecognized = false;
+            infoPanel.isMismatch = false; // Reset mismatch flag as well
         }
     }
 }

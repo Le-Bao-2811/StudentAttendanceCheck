@@ -4,10 +4,10 @@
 // ==========================================
 // CAMERA CONTROLLER
 // ==========================================
-CameraController::CameraController(QObject *parent) : QObject(parent)
+CameraController::CameraController(QObject *parent) : QObject(parent), m_isAlreadyRecognized(false)
 {
     m_timer = new QTimer(this);
-    // Lúc này connect() gọi trực tiếp từ QObject chuẩn, không còn bị xung đột
+    // Connect directly to the base QObject signal here; no more conflict issue
     connect(m_timer, &QTimer::timeout, this, &CameraController::grabFrame);
 }
 
@@ -18,17 +18,29 @@ CameraController::~CameraController()
     }
 }
 
+// In CameraController::loadDummyData:
+void CameraController::loadDummyData(const QString &photoPath) {
+    cv::Mat myPhoto = cv::imread(photoPath.toStdString());
+    if (!myPhoto.empty()) {
+        m_myFaceCrop = m_faceMatcher.getFaceCrop(myPhoto);
+        m_dummyStudent.avatarPath = photoPath;
+        qDebug() << "Face extracted successfully from the sample image!";
+    } else {
+        qDebug() << "Unable to open the sample image file!";
+    }
+}
+
 bool CameraController::openDroidCam(int cameraIndex)
 {
     if (m_capture.isOpened()) {
         m_capture.release();
     }
 
-    // Ép buộc chỉ dùng Media Foundation (CAP_MSMF), KHÔNG thử CAP_ANY để tránh DirectShow bị crash
+    // Force using Media Foundation (CAP_MSMF) only; do not try CAP_ANY to avoid DirectShow crashes
     m_capture.open(cameraIndex, cv::CAP_MSMF);
 
     if (!m_capture.isOpened()) {
-        qDebug() << "Không thể kết nối DroidCam qua MSMF tại index:" << cameraIndex;
+        qDebug() << "Unable to connect to DroidCam via MSMF at index:" << cameraIndex;
         return false;
     }
 
@@ -43,35 +55,52 @@ bool CameraController::openDroidCamUrl(const QString &url)
     }
 
     std::string stdUrl = url.toStdString();
-    qDebug() << "Dang mo URL:" << url;
+    qDebug() << "Opening URL:" << url;
 
-    // Sử dụng FFMPEG để mở luồng video
+    // Use FFMPEG to open the video stream
     m_capture.open(stdUrl, cv::CAP_FFMPEG);
 
     if (!m_capture.isOpened()) {
-        // Thử fallback sang CAP_ANY
+        // Try fallback to CAP_ANY
         m_capture.open(stdUrl, cv::CAP_ANY);
     }
 
     if (!m_capture.isOpened()) {
-        qDebug() << "LOI: m_capture.isOpened() van FALSE voi URL:" << url;
+        qDebug() << "ERROR: m_capture.isOpened() is still FALSE for URL:" << url;
         return false;
     }
 
-    qDebug() << "THANH CONG: Da ket noi DroidCam stream!";
+    qDebug() << "SUCCESS: DroidCam stream connected!";
     m_timer->start(33); // ~30 FPS
     return true;
 }
 
 void CameraController::grabFrame()
 {
-    // Đảm bảo capture đã mở thành công
-    if (!m_capture.isOpened()) return;
-
     cv::Mat frame;
-    // Đọc frame và kiểm tra dữ liệu
     if (m_capture.read(frame) && !frame.empty() && frame.cols > 0 && frame.rows > 0) {
 
+        // Only compare faces if the sample face has been loaded and the student is not already checked in
+        if (!m_myFaceCrop.empty() && !m_isAlreadyRecognized) {
+
+            // Detect and crop the face currently being scanned by the camera
+            cv::Mat currentCamFace = m_faceMatcher.getFaceCrop(frame);
+
+            if (!currentCamFace.empty()) {
+                // Compare the face in the camera with the sample face
+                bool isMatched = m_faceMatcher.compareFaces(m_myFaceCrop, currentCamFace);
+
+                if (isMatched) {
+                    // [MATCHED FACE] Lock recognition and emit a signal to send attendance data to QML
+                    processDummyAttendance();
+                } else {
+                    // [MISMATCHED FACE] Emit mismatch only if not in the reset wait state
+                    emit faceMismatch();
+                }
+            }
+        }
+
+        // Convert the frame for display in QML
         cv::Mat rgbFrame;
         cv::cvtColor(frame, rgbFrame, cv::COLOR_BGR2RGB);
 
@@ -80,9 +109,26 @@ void CameraController::grabFrame()
                                 QImage::Format_RGB888).copy();
 
         emit frameUpdated();
-    } else {
-        qDebug() << "Frame chưa sẵn sàng hoặc rỗng...";
     }
+}
+void CameraController::processDummyAttendance() {
+    // [NEW] Enable the lock flag to stop duplicate comparisons
+    m_isAlreadyRecognized = true;
+    // [NEW] Update the current time (Current DateTime)
+    m_dummyStudent.updateCheckInTime();
+
+    // [NEW] Emit a signal sending the complete dummy attendance data to QML
+    emit studentRecognized(
+        m_dummyStudent.fullName,
+        m_dummyStudent.className,
+        m_dummyStudent.checkInTime,
+        m_dummyStudent.avatarPath
+        );
+
+    // [NEW] Wait 5 seconds, then automatically re-enable scanning for the next attempt
+    QTimer::singleShot(5000, this, [this]() {
+        m_isAlreadyRecognized = false;
+    });
 }
 
 // ==========================================
