@@ -122,7 +122,7 @@ void CameraController::processDummyAttendance() {
         m_dummyStudent.fullName,
         m_dummyStudent.className,
         m_dummyStudent.checkInTime,
-        m_dummyStudent.avatarPath
+        QUrl::fromLocalFile(m_dummyStudent.avatarPath).toString()
         );
 
     // [NEW] Wait 5 seconds, then automatically re-enable scanning for the next attempt
