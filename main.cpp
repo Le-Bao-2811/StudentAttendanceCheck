@@ -7,10 +7,10 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
 
     QQmlApplicationEngine engine;
-    // 1. Khai báo biến url
+    // 1. Declare the URL variable
     const QUrl url(QStringLiteral("qrc:/qt/qml/StudentAttendanceCheck/Main.qml"));
 
-    // 2. Khởi tạo Controller & ImageProvider
+    // 2. Initialize the controller and image provider
     CameraController *cameraController = new CameraController(&app);
     engine.rootContext()->setContextProperty("cameraController", cameraController);
     engine.addImageProvider(QLatin1String("camera"), new CameraImageProvider(cameraController));

@@ -5,6 +5,7 @@ project(StudentAttendanceCheck VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Quick)
+find_package(Qt6 REQUIRED COMPONENTS Quick Sql)
 
 set(OpenCV_DIR "E:/OpenCVGit/OpenCV-MinGW-Build-OpenCV-4.1.0-x64/x64/mingw/lib")
 find_package(OpenCV REQUIRED)
@@ -30,6 +31,7 @@ qt_add_qml_module(appStudentAttendanceCheck
         Main.qml
         SOURCES CameraProvider.h
         SOURCES CameraProvider.cpp
+        QML_FILES AddStudentDialog.qml
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
@@ -45,7 +47,8 @@ set_target_properties(appStudentAttendanceCheck PROPERTIES
 
 target_link_libraries(appStudentAttendanceCheck
     PRIVATE Qt6::Quick
-     ${OpenCV_LIBS}
+    ${OpenCV_LIBS}
+    Qt6::Sql
 )
 
 install(TARGETS appStudentAttendanceCheck

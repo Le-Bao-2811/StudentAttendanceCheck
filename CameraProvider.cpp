@@ -1,5 +1,7 @@
 #include "cameraprovider.h"
 #include <QDebug>
+#include <QSqlQuery>
+#include <QSqlError>
 
 // ==========================================
 // CAMERA CONTROLLER
@@ -7,6 +9,12 @@
 CameraController::CameraController(QObject *parent) : QObject(parent), m_isAlreadyRecognized(false)
 {
     m_timer = new QTimer(this);
+    if (connectToDatabase()) {
+        // Start loading students into the cache
+        loadAllStudentsFromDb();
+    } else {
+        qDebug() << "Unable to load student data because the database connection failed!";
+    }
     // Connect directly to the base QObject signal here; no more conflict issue
     connect(m_timer, &QTimer::timeout, this, &CameraController::grabFrame);
 }
@@ -22,8 +30,8 @@ CameraController::~CameraController()
 void CameraController::loadDummyData(const QString &photoPath) {
     cv::Mat myPhoto = cv::imread(photoPath.toStdString());
     if (!myPhoto.empty()) {
-        m_myFaceCrop = m_faceMatcher.getFaceCrop(myPhoto);
-        m_dummyStudent.avatarPath = photoPath;
+        //m_myFaceCrop = m_faceMatcher.getFaceCrop(myPhoto);
+        //m_dummyStudent.avatarPath = photoPath;
         qDebug() << "Face extracted successfully from the sample image!";
     } else {
         qDebug() << "Unable to open the sample image file!";
@@ -75,24 +83,80 @@ bool CameraController::openDroidCamUrl(const QString &url)
     return true;
 }
 
+void CameraController::startCaptureProcess(const QString &studentId, const QString &studentName, const QString &studentClass)
+{
+    m_tempId = studentId;
+    m_tempName = studentName;
+    m_tempClass = studentClass;
+    m_shouldCapture = true; // Mark for grabFrame() to capture on the next loop iteration
+}
+
+bool CameraController::saveStudentToDb(const QString &studentId, const QString &studentName, const QString &studentClass, const QString &imagePath)
+{
+    QSqlQuery query;
+    // Prepare the SQL statement to insert the information
+    query.prepare("INSERT INTO StudyList (StudentId, NameStudent, Class, pathAvtImage) "
+                  "VALUES (:studentId, :name, :class, :path)");
+
+    query.bindValue(":studentId", studentId);
+    query.bindValue(":name", studentName);
+    query.bindValue(":class", studentClass);
+    query.bindValue(":path", imagePath);
+
+    // Execute the query and check for errors
+    if (!query.exec()) {
+        qDebug() << "Lỗi khi lưu sinh viên vào SQL:" << query.lastError().text();
+        return false;
+    }
+
+    qDebug() << "Thêm thông tin sinh viên vào Database SQL thành công!";
+    return true;
+}
+
 void CameraController::grabFrame()
 {
     cv::Mat frame;
     if (m_capture.read(frame) && !frame.empty() && frame.cols > 0 && frame.rows > 0) {
 
         // Only compare faces if the sample face has been loaded and the student is not already checked in
-        if (!m_myFaceCrop.empty() && !m_isAlreadyRecognized) {
+        if (!m_studentCache.isEmpty() && !m_isAlreadyRecognized) {
 
             // Detect and crop the face currently being scanned by the camera
             cv::Mat currentCamFace = m_faceMatcher.getFaceCrop(frame);
 
             if (!currentCamFace.empty()) {
                 // Compare the face in the camera with the sample face
-                bool isMatched = m_faceMatcher.compareFaces(m_myFaceCrop, currentCamFace);
+                bool foundMatch = false;
+                StudentData matchedStudent;
+                for (const StudentData &student : m_studentCache) {
+                    if (student.faceCrop.empty()) continue;
 
-                if (isMatched) {
-                    // [MATCHED FACE] Lock recognition and emit a signal to send attendance data to QML
-                    processDummyAttendance();
+                    // Compare the camera face with each student in the cache
+                    if (m_faceMatcher.compareFaces(student.faceCrop, currentCamFace)) {
+                        foundMatch = true;
+                        matchedStudent = student;
+                        break; // Stop the loop as soon as a matching student is found
+                    }
+                }
+                if (foundMatch) {
+                    // [MATCHED FACE] Temporarily lock recognition
+                    m_isAlreadyRecognized = true;
+
+                    // Get the current time
+                    QString checkInTime = QDateTime::currentDateTime().toString("hh:mm:ss - dd/MM/yyyy");
+
+                    // Send the matched student data to QML
+                    emit studentRecognized(
+                        matchedStudent.fullName,
+                        matchedStudent.className,
+                        checkInTime,
+                        matchedStudent.getFormattedAvatarUrl()
+                        );
+
+                    // Lock recognition for 4 seconds so the UI can display the result before scanning resumes
+                    QTimer::singleShot(4000, this, [this]() {
+                        m_isAlreadyRecognized = false;
+                    });
                 } else {
                     // [MISMATCHED FACE] Emit mismatch only if not in the reset wait state
                     emit faceMismatch();
@@ -100,6 +164,39 @@ void CameraController::grabFrame()
             }
         }
 
+        if (m_shouldCapture) {
+            m_shouldCapture = false; // Clear the flag as soon as the capture request is detected
+
+            // 1. Create the directory for student images if it does not exist
+            QString dirPath = QCoreApplication::applicationDirPath() + "/student_images";
+            QDir().mkpath(dirPath);
+
+            // 2. Generate the image filename from the student ID and capture time
+            QString fileName = QString("%1_%2.jpg")
+                                   .arg(m_tempId)
+                                   .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+            QString fullPath = dirPath + "/" + fileName;
+
+            // 3. Convert the current OpenCV BGR frame to QImage for saving to disk
+            cv::Mat rgbMat;
+            cv::cvtColor(frame, rgbMat, cv::COLOR_BGR2RGB);
+            QImage captureImage(rgbMat.data, rgbMat.cols, rgbMat.rows,
+                                static_cast<int>(rgbMat.step),
+                                QImage::Format_RGB888);
+
+            // 4. Save the image file and add the information to the database
+            if (captureImage.copy().save(fullPath, "JPG")) {
+                qDebug() << "Đã chụp và lưu ảnh sinh viên mới tại:" << fullPath;
+
+                // Save the student information to SQL
+                if (saveStudentToDb(m_tempId, m_tempName, m_tempClass, fullPath)) {
+                    // Update the in-memory cache so the new student can check in immediately
+                    loadAllStudentsFromDb();
+                }
+            } else {
+                qDebug() << "Lỗi: Không thể lưu file ảnh sinh viên!";
+            }
+        }
         // Convert the frame for display in QML
         cv::Mat rgbFrame;
         cv::cvtColor(frame, rgbFrame, cv::COLOR_BGR2RGB);
@@ -111,13 +208,14 @@ void CameraController::grabFrame()
         emit frameUpdated();
     }
 }
+
 void CameraController::processDummyAttendance() {
-    // [NEW] Enable the lock flag to stop duplicate comparisons
+    // Enable the lock flag to prevent duplicate comparisons
     m_isAlreadyRecognized = true;
-    // [NEW] Update the current time (Current DateTime)
+    // Update the current time
     m_dummyStudent.updateCheckInTime();
 
-    // [NEW] Emit a signal sending the complete dummy attendance data to QML
+    // Emit a signal sending the complete dummy attendance data to QML
     emit studentRecognized(
         m_dummyStudent.fullName,
         m_dummyStudent.className,
@@ -125,7 +223,7 @@ void CameraController::processDummyAttendance() {
         QUrl::fromLocalFile(m_dummyStudent.avatarPath).toString()
         );
 
-    // [NEW] Wait 5 seconds, then automatically re-enable scanning for the next attempt
+    // Wait 5 seconds, then automatically re-enable scanning for the next attempt
     QTimer::singleShot(5000, this, [this]() {
         m_isAlreadyRecognized = false;
     });
@@ -155,4 +253,59 @@ QImage CameraImageProvider::requestImage(const QString &id, QSize *size, const Q
         return emptyImg;
     }
     return img;
+}
+bool CameraController::loadAllStudentsFromDb() {
+    m_studentCache.clear();
+    if (!QSqlDatabase::database().isOpen()) {
+        qDebug() << "ERROR: Database was not opened before loading students!";
+        return false;
+    }
+    QSqlQuery query("SELECT Id, StudentId, NameStudent, Class, pathAvtImage FROM StudyList");
+
+    while (query.next()) {
+        StudentData student;
+        student.Id = query.value("Id").toInt();
+        student.studentId = query.value("StudentId").toString();
+        student.fullName = query.value("NameStudent").toString();
+        student.className = query.value("Class").toString();
+        student.avatarPath = query.value("pathAvtImage").toString();
+
+        // Read the avatar image from disk and extract the standard face crop
+        if (!student.avatarPath.isEmpty()) {
+            cv::Mat image = cv::imread(student.avatarPath.toStdString());
+            if (!image.empty()) {
+                student.faceCrop = m_faceMatcher.getFaceCrop(image);
+            }
+        }
+
+        // Add the student to the in-memory cache
+        m_studentCache.append(student);
+    }
+
+    qDebug() << "Successfully loaded" << m_studentCache.size() << "students into the RAM cache.";
+    return !m_studentCache.isEmpty();
+}
+bool CameraController::connectToDatabase() {
+    // 1. Check whether the database is already open before reopening it
+    if (QSqlDatabase::database().isOpen()) {
+        return true;
+    }
+
+    // 2. Create the default connection
+    QSqlDatabase db = QSqlDatabase::addDatabase("QODBC");
+
+    QString connectionString = "DRIVER={ODBC Driver 17 for SQL Server};"
+                               "SERVER=LAPTOP-UHPOGM33\\MSSQLSERVER01;" // Or your Server/SQLEXPRESS name
+                               "DATABASE=StudentAttendanceCheck;"
+                               "Trusted_Connection=Yes;";
+
+    db.setDatabaseName(connectionString);
+
+    if (!db.open()) {
+        qDebug() << "Database connection error:" << db.lastError().text();
+        return false;
+    }
+
+    qDebug() << "SQL Server connection successful!";
+    return true;
 }

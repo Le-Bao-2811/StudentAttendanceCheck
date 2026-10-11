@@ -33,7 +33,7 @@ Window {
 
     Component.onCompleted: {
         cameraController.loadDummyData("E:/hoaibao.jpg"); // Recommended to use forward slashes / instead of \
-        cameraController.openDroidCamUrl("");
+        cameraController.openDroidCamUrl("http://IP:Port/video");
     }
 
     RowLayout {
@@ -219,6 +219,19 @@ Window {
                     font.pixelSize: 14
                     horizontalAlignment: Text.AlignHCenter
                     visible: !isRecognized && !infoPanel.isMismatch
+                }
+                Button
+                {
+                    Layout.fillWidth: true
+                    text: "Add student"
+                    onClicked: {
+                        addStudentPopup.open()
+                    }
+
+                }
+                AddStudentDialog {
+                    id: addStudentPopup
+                    anchors.centerIn: parent
                 }
             }
         }
